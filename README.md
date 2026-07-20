@@ -2,7 +2,7 @@
 
 A Telegram bot that indexes photos and screenshots shared in a chat and lets you find them later using a natural-language description (semantic search powered by CLIP + pgvector).
 ---
-![Python](https://img.shields.io/badge/Python-3.13-blue?style=flat&logo=python)
+![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat&logo=python)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791?style=flat&logo=postgresql)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
 ![Status](https://img.shields.io/badge/Status-In_Development-yellow?style=flat)
