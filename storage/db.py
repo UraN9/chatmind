@@ -10,7 +10,7 @@ from typing import Optional
 import psycopg
 from pgvector.psycopg import register_vector
 
-from config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+import config
 
 
 def get_connection() -> psycopg.Connection:
@@ -18,13 +18,17 @@ def get_connection() -> psycopg.Connection:
     Open a new connection to the database and register the pgvector
     type adapter, so Python lists/arrays can be sent and received
     as `vector` columns transparently.
+
+    Reads connection settings from the `config` module at call time
+    (not at import time), so tests can point this at a different
+    database by overriding config.DB_NAME before calling.
     """
     conn = psycopg.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        dbname=config.DB_NAME,
+        user=config.DB_USER,
+        password=config.DB_PASSWORD,
     )
     register_vector(conn)
     return conn

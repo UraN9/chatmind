@@ -1,71 +1,124 @@
 """
-Quick manual test for storage/db.py.
+Tests for storage/db.py: saving items and searching by similarity.
 
-Inserts a few fake items with random embeddings and runs a similarity
-search, just to confirm the database layer works end to end before
-plugging in real CLIP embeddings.
-
-Run with:
-    python test_db.py
+Uses fake (but deterministic) embeddings instead of real CLIP vectors,
+so these tests are fast and don't require the model to be loaded.
 """
 
 import random
 
-from storage.db import save_item, search_similar
-
-EMBEDDING_DIM = 512
-
-
-def random_vector() -> list[float]:
-    return [random.uniform(-1, 1) for _ in range(EMBEDDING_DIM)]
+import config
+from storage.db import save_item, search_similar, get_connection
 
 
-def main() -> None:
-    print("Inserting fake items...")
+def _random_vector() -> list[float]:
+    return [random.uniform(-1, 1) for _ in range(512)]
 
-    fake_items = [
-        {
-            "chat_id": 1,
-            "message_id": 101,
-            "file_id": "fake_file_id_1",
-            "media_type": "photo",
-            "sender_name": "Dima",
-            "caption": "payment screenshot",
-        },
-        {
-            "chat_id": 1,
-            "message_id": 102,
-            "file_id": "fake_file_id_2",
-            "media_type": "photo",
-            "sender_name": "Dima",
-            "caption": "meeting screenshot",
-        },
-        {
-            "chat_id": 1,
-            "message_id": 103,
-            "file_id": "fake_file_id_3",
-            "media_type": "photo",
-            "sender_name": "Dima",
-            "caption": "random cat photo",
-        },
-    ]
 
-    inserted_ids = []
-    for item in fake_items:
-        new_id = save_item(embedding=random_vector(), **item)
-        inserted_ids.append(new_id)
-        print(f"  Inserted id={new_id} ({item['caption']})")
+def test_save_item_returns_an_id(sample_embedding):
+    item_id = save_item(
+        chat_id=1,
+        message_id=101,
+        file_id="fake_file_id",
+        media_type="photo",
+        embedding=sample_embedding,
+        caption="a test item",
+    )
 
-    print("\nRunning similarity search with a random query vector...")
-    results = search_similar(query_embedding=random_vector(), chat_id=1, limit=5)
+    assert isinstance(item_id, int)
+    assert item_id > 0
 
-    print(f"\nFound {len(results)} result(s):")
-    for row in results:
-        print(
-            f"  id={row['id']} caption={row['caption']!r} "
-            f"similarity={row['similarity']:.4f}"
+
+def test_search_similar_returns_saved_items(sample_embedding):
+    save_item(
+        chat_id=1,
+        message_id=101,
+        file_id="fake_file_id",
+        media_type="photo",
+        embedding=sample_embedding,
+        caption="a test item",
+    )
+
+    results = search_similar(query_embedding=sample_embedding, chat_id=1)
+
+    assert len(results) == 1
+    assert results[0]["caption"] == "a test item"
+
+
+def test_search_similar_ranks_closer_vectors_higher():
+    close_vector = [1.0] * 512
+    far_vector = [-1.0] * 512
+
+    save_item(
+        chat_id=1,
+        message_id=1,
+        file_id="close_item",
+        media_type="photo",
+        embedding=close_vector,
+        caption="close item",
+    )
+    save_item(
+        chat_id=1,
+        message_id=2,
+        file_id="far_item",
+        media_type="photo",
+        embedding=far_vector,
+        caption="far item",
+    )
+
+    results = search_similar(query_embedding=close_vector, chat_id=1, limit=2)
+
+    assert results[0]["caption"] == "close item"
+    assert results[1]["caption"] == "far item"
+    assert results[0]["similarity"] > results[1]["similarity"]
+
+
+def test_search_similar_respects_chat_id_filter(sample_embedding):
+    save_item(
+        chat_id=1,
+        message_id=1,
+        file_id="item_in_chat_1",
+        media_type="photo",
+        embedding=sample_embedding,
+    )
+    save_item(
+        chat_id=2,
+        message_id=1,
+        file_id="item_in_chat_2",
+        media_type="photo",
+        embedding=sample_embedding,
+    )
+
+    results = search_similar(query_embedding=sample_embedding, chat_id=1)
+
+    assert len(results) == 1
+    assert results[0]["file_id"] == "item_in_chat_1"
+
+
+def test_search_similar_respects_limit(sample_embedding):
+    for i in range(5):
+        save_item(
+            chat_id=1,
+            message_id=i,
+            file_id=f"item_{i}",
+            media_type="photo",
+            embedding=_random_vector(),
         )
 
+    results = search_similar(query_embedding=sample_embedding, chat_id=1, limit=3)
 
-if __name__ == "__main__":
-    main()
+    assert len(results) == 3
+
+
+def test_connection_points_at_test_database():
+    """
+    Explicit safety check: confirms every test in this suite is
+    actually talking to chatmind_test, not the real database.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_database()")
+            db_name = cur.fetchone()[0]
+
+    assert db_name == config.TEST_DB_NAME
+    assert db_name != "chatmind"
