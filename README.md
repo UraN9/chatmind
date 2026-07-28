@@ -74,5 +74,5 @@ pytest -v
 - [x] Processing module (CLIP embeddings)
 - [x] Telegram bot (photo indexing + `/find` search)
 - [x] Pytest suite with isolated test database
-- [ ] OCR for text inside screenshots
+- [x] OCR for text inside screenshots
 - [ ] Bot UX improvements (indexing confirmation, error handling)

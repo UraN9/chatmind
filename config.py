@@ -27,6 +27,10 @@ TEST_DB_NAME = os.getenv("POSTGRES_TEST_DB", "chatmind_test")
 # Telegram bot
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# OCR: path to the Tesseract executable, only needed if it's not on
+# your system PATH. Leave empty in .env to use the system default.
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", "")
+
 # Works around a known Windows issue where torch and other libraries
 # (e.g. numpy) each bundle their own copy of the OpenMP runtime,
 # which can cause silent crashes (segmentation faults) when both are
