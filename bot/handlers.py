@@ -17,7 +17,8 @@ from aiogram.types import Message
 from PIL import Image
 
 from processing.embeddings import embed_image, embed_text
-from storage.db import save_item, search_similar
+from processing.ocr import extract_text
+from storage.db import save_item, search_by_ocr_text, search_similar
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ async def handle_photo(message: Message) -> None:
 
     image = Image.open(io.BytesIO(file_bytes.read())).convert("RGB")
     embedding = embed_image(image)
+    ocr_text = extract_text(image)
 
     item_id = save_item(
         chat_id=message.chat.id,
@@ -43,31 +45,51 @@ async def handle_photo(message: Message) -> None:
         sender_id=message.from_user.id if message.from_user else None,
         sender_name=message.from_user.full_name if message.from_user else None,
         caption=message.caption,
+        ocr_text=ocr_text or None,
     )
 
-    logger.info("Indexed photo id=%s from chat=%s", item_id, message.chat.id)
+    logger.info(
+        "Indexed photo id=%s from chat=%s (ocr_text: %s chars)",
+        item_id,
+        message.chat.id,
+        len(ocr_text),
+    )
 
 
 @router.message(Command("find"))
 async def handle_find(message: Message) -> None:
-    """Search for a photo matching the given text description."""
+    """Search for a photo matching the given text description.
+
+    Tries an exact OCR text match first (e.g. the query matches text
+    that literally appears on a screenshot), since that's a more
+    precise signal than visual similarity when it's available.
+    Falls back to CLIP-based visual similarity search otherwise.
+    """
     query = (message.text or "").removeprefix("/find").strip()
 
     if not query:
         await message.reply("Usage: /find <description>")
         return
 
-    query_embedding = embed_text(query)
-    results = search_similar(
-        query_embedding=query_embedding, chat_id=message.chat.id, limit=3
+    results = search_by_ocr_text(
+        query_text=query, chat_id=message.chat.id, limit=3
     )
+    search_kind = "text match"
+
+    if not results:
+        query_embedding = embed_text(query)
+        results = search_similar(
+            query_embedding=query_embedding, chat_id=message.chat.id, limit=3
+        )
+        search_kind = "visual similarity"
 
     if not results:
         await message.reply("Nothing found yet.")
         return
 
     for item in results:
-        caption_lines = [f"similarity: {item['similarity']:.2f}"]
+        score = item.get("similarity", item.get("rank"))
+        caption_lines = [f"{search_kind}: {score:.2f}"]
         if item["caption"]:
             caption_lines.append(item["caption"])
         await message.answer_photo(

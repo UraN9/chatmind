@@ -116,3 +116,52 @@ def search_similar(
             rows = cur.fetchall()
 
     return [dict(zip(columns, row)) for row in rows]
+
+
+def search_by_ocr_text(
+    query_text: str,
+    chat_id: Optional[int] = None,
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Find media items whose OCR-extracted text matches query_text,
+    using Postgres full-text search (the same GIN index used here is
+    created in db/init.sql). Useful for finding a specific screenshot
+    by text that literally appears on it (e.g. "invoice #4471"),
+    which CLIP's visual similarity search isn't designed to catch.
+
+    Returns a list of dicts, ordered by text-match relevance.
+    """
+    sql = """
+        SELECT
+            id,
+            file_id,
+            media_type,
+            ocr_text,
+            caption,
+            sender_name,
+            created_at,
+            ts_rank(
+                to_tsvector('simple', coalesce(ocr_text, '')),
+                plainto_tsquery('simple', %s)
+            ) AS rank
+        FROM media_items
+        WHERE to_tsvector('simple', coalesce(ocr_text, ''))
+              @@ plainto_tsquery('simple', %s)
+    """
+    params: list = [query_text, query_text]
+
+    if chat_id is not None:
+        sql += " AND chat_id = %s"
+        params.append(chat_id)
+
+    sql += " ORDER BY rank DESC LIMIT %s"
+    params.append(limit)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
