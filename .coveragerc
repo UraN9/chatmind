@@ -1,0 +1,11 @@
+[run]
+source = bot, processing, storage, config.py
+omit =
+    tests/*
+    */__pycache__/*
+    venv/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

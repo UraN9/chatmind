@@ -8,6 +8,7 @@ touch real data. storage/db.py reads config.DB_NAME at call time
 """
 
 import pytest
+from PIL import Image, ImageDraw, ImageFont
 
 import config
 from storage.db import get_connection
@@ -75,3 +76,29 @@ def sample_embedding():
     values don't matter (e.g. testing that save/search round-trips
     correctly, without needing a real CLIP model loaded)."""
     return [0.01 * i for i in range(512)]
+
+
+@pytest.fixture(scope="session")
+def red_image():
+    """A solid red square. Cheap to generate, no external file needed."""
+    return Image.new("RGB", (224, 224), color=(220, 30, 30))
+
+
+@pytest.fixture(scope="session")
+def blue_image():
+    """A solid blue square, visually distinct from red_image."""
+    return Image.new("RGB", (224, 224), color=(30, 60, 220))
+
+
+@pytest.fixture(scope="session")
+def text_image():
+    """A plain white image with rendered text, for OCR tests."""
+    image = Image.new("RGB", (800, 200), color=(255, 255, 255))
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.load_default(size=48)
+    except TypeError:
+        # Older Pillow versions don't support the `size` argument.
+        font = ImageFont.load_default()
+    draw.text((20, 60), "HELLO CHATMIND", fill=(0, 0, 0), font=font)
+    return image

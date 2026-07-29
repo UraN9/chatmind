@@ -1,63 +1,68 @@
 """
-End-to-end integration test: real CLIP embeddings + Postgres/pgvector.
+End-to-end integration tests: real CLIP embeddings (and OCR, where
+available) combined with the actual database layer. Confirms the
+full pipeline works together, not just each piece in isolation.
 
-Saves a real image to the database using its actual CLIP embedding,
-then searches for it using a plain text query, to confirm the full
-pipeline works (not just each piece in isolation).
-
-Run with:
-    python test_integration.py path/to/your/image.jpg
+Uses the synthetic image fixtures from conftest.py, so no external
+image files are needed to run these tests.
 """
 
-import sys
+import pytesseract
+import pytest
 
 from processing.embeddings import embed_image, embed_text
-from storage.db import save_item, search_similar
+from processing.ocr import extract_text
+from storage.db import save_item, search_similar, search_by_ocr_text
 
-TEST_CHAT_ID = 999999  # dedicated fake chat_id, easy to clean up later
+TEST_CHAT_ID = 999999
 
 
-def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python test_integration.py path/to/image.jpg")
-        sys.exit(1)
-
-    image_path = sys.argv[1]
-
-    print(f"Embedding image: {image_path}")
-    image_embedding = embed_image(image_path)
-
-    print("Saving to the database...")
-    item_id = save_item(
+def test_saved_image_is_found_by_matching_text_query(red_image, blue_image):
+    red_id = save_item(
         chat_id=TEST_CHAT_ID,
         message_id=1,
-        file_id="integration_test_file_id",
+        file_id="red_image",
         media_type="photo",
-        embedding=image_embedding,
-        sender_name="integration_test",
-        caption="integration test image",
+        embedding=embed_image(red_image),
+        caption="red square",
     )
-    print(f"Saved as id={item_id}")
+    save_item(
+        chat_id=TEST_CHAT_ID,
+        message_id=2,
+        file_id="blue_image",
+        media_type="photo",
+        embedding=embed_image(blue_image),
+        caption="blue square",
+    )
 
-    queries = [
-        "a screenshot of a chat conversation",
-        "a photo of a cat",
-        "a picture of food",
-    ]
+    query_embedding = embed_text("a photo of the color red")
+    results = search_similar(
+        query_embedding=query_embedding, chat_id=TEST_CHAT_ID, limit=1
+    )
 
-    print("\nSearching with text queries:\n")
-    for query in queries:
-        query_embedding = embed_text(query)
-        results = search_similar(
-            query_embedding=query_embedding, chat_id=TEST_CHAT_ID, limit=1
-        )
-        top = results[0] if results else None
-        if top:
-            print(f"  Query: {query!r}")
-            print(f"    -> id={top['id']} similarity={top['similarity']:.4f}")
-        else:
-            print(f"  Query: {query!r} -> no results")
+    assert len(results) == 1
+    assert results[0]["id"] == red_id
 
 
-if __name__ == "__main__":
-    main()
+def test_saved_image_is_found_by_ocr_text(text_image):
+    try:
+        pytesseract.get_tesseract_version()
+    except Exception:
+        pytest.skip("Tesseract binary not found or not configured")
+
+    ocr_text = extract_text(text_image)
+    item_id = save_item(
+        chat_id=TEST_CHAT_ID,
+        message_id=3,
+        file_id="text_image",
+        media_type="photo",
+        embedding=embed_image(text_image),
+        ocr_text=ocr_text,
+    )
+
+    results = search_by_ocr_text(
+        query_text="hello", chat_id=TEST_CHAT_ID, limit=1
+    )
+
+    assert len(results) == 1
+    assert results[0]["id"] == item_id
