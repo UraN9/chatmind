@@ -122,6 +122,56 @@ def search_similar(
     return [dict(zip(columns, row)) for row in rows]
 
 
+def count_similar(
+    query_embedding: list[float],
+    chat_id: Optional[int] = None,
+) -> int:
+    """
+    Count how many media items would be returned by search_similar
+    for the same chat filter (i.e. every embedded item in that chat,
+    since cosine similarity ranks rather than thresholds). Used to
+    show a "3/14" style counter in the results gallery.
+    """
+    sql = "SELECT COUNT(*) FROM media_items WHERE embedding IS NOT NULL"
+    params: list = []
+
+    if chat_id is not None:
+        sql += " AND chat_id = %s"
+        params.append(chat_id)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchone()[0]
+
+
+def count_by_ocr_text(
+    query_text: str,
+    chat_id: Optional[int] = None,
+) -> int:
+    """
+    Count how many media items match query_text via full-text search,
+    using the same WHERE clause as search_by_ocr_text. Used to show
+    a "3/14" style counter in the results gallery.
+    """
+    sql = """
+        SELECT COUNT(*)
+        FROM media_items
+        WHERE to_tsvector('simple', coalesce(ocr_text, ''))
+              @@ plainto_tsquery('simple', %s)
+    """
+    params: list = [query_text]
+
+    if chat_id is not None:
+        sql += " AND chat_id = %s"
+        params.append(chat_id)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchone()[0]
+
+
 def search_by_ocr_text(
     query_text: str,
     chat_id: Optional[int] = None,
