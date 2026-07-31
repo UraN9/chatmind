@@ -224,6 +224,61 @@ def search_by_ocr_text(
     return [dict(zip(columns, row)) for row in rows]
 
 
+def get_chat_stats(chat_id: int, top_senders_limit: int = 3) -> dict:
+    """
+    Aggregate stats for a chat, used by the /stats command:
+    - total: how many media items are indexed
+    - with_ocr: how many of those have non-empty OCR text (and are
+      therefore also searchable via search_by_ocr_text)
+    - first_photo_at / last_photo_at: created_at of the oldest/newest
+      indexed item (None if the chat has nothing indexed yet)
+    - top_senders: up to `top_senders_limit` (sender_name, count)
+      pairs, ordered by how many photos they sent, ignoring items
+      with no sender_name (e.g. forwarded/anonymous posts)
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (
+                        WHERE ocr_text IS NOT NULL AND ocr_text != ''
+                    ) AS with_ocr,
+                    MIN(created_at) AS first_photo_at,
+                    MAX(created_at) AS last_photo_at
+                FROM media_items
+                WHERE chat_id = %s
+                """,
+                (chat_id,),
+            )
+            total, with_ocr, first_photo_at, last_photo_at = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT sender_name, COUNT(*) AS count
+                FROM media_items
+                WHERE chat_id = %s AND sender_name IS NOT NULL
+                GROUP BY sender_name
+                ORDER BY count DESC
+                LIMIT %s
+                """,
+                (chat_id, top_senders_limit),
+            )
+            top_senders = [
+                {"sender_name": name, "count": count}
+                for name, count in cur.fetchall()
+            ]
+
+    return {
+        "total": total,
+        "with_ocr": with_ocr,
+        "first_photo_at": first_photo_at,
+        "last_photo_at": last_photo_at,
+        "top_senders": top_senders,
+    }
+
+
 def get_item_by_id(item_id: int) -> Optional[dict]:
     """
     Fetch a single media item by its id. Used when the person taps an
