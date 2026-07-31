@@ -80,10 +80,14 @@ def search_similar(
     query_embedding: list[float],
     chat_id: Optional[int] = None,
     limit: int = 5,
+    offset: int = 0,
 ) -> list[dict]:
     """
     Find the media items whose embedding is closest to query_embedding,
     using cosine distance. Optionally restrict the search to one chat.
+
+    `offset` skips the first N closest matches, useful for pagination
+    (e.g. "show me the next batch of results").
 
     Returns a list of dicts, ordered from most to least similar.
     """
@@ -106,8 +110,8 @@ def search_similar(
         sql += " AND chat_id = %s"
         params.append(chat_id)
 
-    sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
-    params.extend([query_embedding, limit])
+    sql += " ORDER BY embedding <=> %s::vector LIMIT %s OFFSET %s"
+    params.extend([query_embedding, limit, offset])
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -122,6 +126,7 @@ def search_by_ocr_text(
     query_text: str,
     chat_id: Optional[int] = None,
     limit: int = 5,
+    offset: int = 0,
 ) -> list[dict]:
     """
     Find media items whose OCR-extracted text matches query_text,
@@ -129,6 +134,8 @@ def search_by_ocr_text(
     created in db/init.sql). Useful for finding a specific screenshot
     by text that literally appears on it (e.g. "invoice #4471"),
     which CLIP's visual similarity search isn't designed to catch.
+
+    `offset` skips the first N matches, useful for pagination.
 
     Returns a list of dicts, ordered by text-match relevance.
     """
@@ -155,8 +162,8 @@ def search_by_ocr_text(
         sql += " AND chat_id = %s"
         params.append(chat_id)
 
-    sql += " ORDER BY rank DESC LIMIT %s"
-    params.append(limit)
+    sql += " ORDER BY rank DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -165,3 +172,28 @@ def search_by_ocr_text(
             rows = cur.fetchall()
 
     return [dict(zip(columns, row)) for row in rows]
+
+
+def get_item_by_id(item_id: int) -> Optional[dict]:
+    """
+    Fetch a single media item by its id. Used when the person taps an
+    inline button to pick one of several search results the bot
+    presented, so the actual photo can be sent only then.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, file_id, media_type, ocr_text, caption,
+                       sender_name, created_at
+                FROM media_items
+                WHERE id = %s
+                """,
+                (item_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            columns = [desc[0] for desc in cur.description]
+
+    return dict(zip(columns, row))
