@@ -35,6 +35,7 @@ from processing.ocr import extract_text
 from storage.db import (
     count_by_ocr_text,
     count_similar,
+    get_chat_stats,
     save_item,
     search_by_ocr_text,
     search_similar,
@@ -62,6 +63,8 @@ HELP_TEXT = (
     "I'll analyze it, extract visible text, and save it for future searches.\n\n"
     "🔍 Find it later\n"
     "Use /find <description> to search by objects, scenes, or text inside the image.\n\n"
+    "📊 Check your stats\n"
+    "Use /stats to see how many photos are indexed in this chat.\n\n"
     "💡 Tips\n"
     "• English descriptions usually give the best results.\n"
     "• Be as specific as possible.\n"
@@ -78,6 +81,11 @@ NOTHING_FOUND_TEXT = (
     "• places or events\n"
     "• visible text\n\n"
     "💡 The more specific your description, the better the results."
+)
+
+STATS_EMPTY_TEXT = (
+    "📊 No photos indexed in this chat yet.\n\n"
+    "Send me a few photos and check back with /stats!"
 )
 
 # In-memory state for gallery navigation, keyed by a short random
@@ -142,6 +150,31 @@ def _gallery_keyboard(token: str, index: int, total: int) -> InlineKeyboardMarku
     if index < total - 1:
         row.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"nav:{token}:1"))
     return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def _format_stats(stats: dict) -> str:
+    total = stats["total"]
+    with_ocr = stats["with_ocr"]
+    ocr_pct = round(100 * with_ocr / total) if total else 0
+
+    lines = [
+        "📊 Chat stats",
+        "",
+        f"📸 Photos indexed: {total}",
+        f"🔤 With readable text (OCR): {with_ocr} ({ocr_pct}%)",
+        f"📅 First photo: {stats['first_photo_at']:%b %d, %Y}",
+        f"📅 Latest photo: {stats['last_photo_at']:%b %d, %Y}",
+    ]
+
+    if stats["top_senders"]:
+        lines.append("")
+        lines.append("🏆 Top senders:")
+        medals = ["🥇", "🥈", "🥉"]
+        for i, sender in enumerate(stats["top_senders"]):
+            medal = medals[i] if i < len(medals) else "•"
+            lines.append(f"{medal} {sender['sender_name']} — {sender['count']}")
+
+    return "\n".join(lines)
 
 
 def _welcome_keyboard() -> InlineKeyboardMarkup:
@@ -324,6 +357,25 @@ async def handle_find(message: Message) -> None:
         return
 
     await _perform_find(message, query)
+
+
+@router.message(Command("stats"))
+async def handle_stats(message: Message) -> None:
+    """Show aggregate stats for this chat: how many photos are
+    indexed, how many have OCR text, the date range, and (if
+    available) who's sent the most."""
+    try:
+        stats = get_chat_stats(message.chat.id)
+    except Exception:
+        logger.exception("Failed to fetch stats for chat %s", message.chat.id)
+        await message.reply("Something went wrong while fetching stats. Please try again.")
+        return
+
+    if stats["total"] == 0:
+        await message.reply(STATS_EMPTY_TEXT)
+        return
+
+    await message.reply(_format_stats(stats))
 
 
 @router.callback_query(F.data.startswith("noop:"))
