@@ -75,4 +75,4 @@ pytest -v
 - [x] Telegram bot (photo indexing + `/find` search)
 - [x] Pytest suite with isolated test database
 - [x] OCR for text inside screenshots
-- [ ] Bot UX improvements (indexing confirmation, error handling)
+- [x] Bot UX improvements (indexing confirmation, error handling)
