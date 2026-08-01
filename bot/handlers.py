@@ -136,11 +136,12 @@ def _fetch_at(query: str, chat_id: int, kind: str, index: int) -> list[dict]:
 
 def _count_results(query: str, chat_id: int, kind: str) -> int:
     """Count the total number of results for the given kind of
-    search, used for the "3/14" gallery counter."""
+    search, used for the "3/14" gallery counter. Only called for
+    "text match" / "visual similarity" -- /favorites counts its own
+    total directly via count_favorites(), since it doesn't need the
+    text-match-then-fallback logic _perform_find does."""
     if kind == "text match":
         return count_by_ocr_text(query_text=query, chat_id=chat_id)
-    if kind == "favorites":
-        return count_favorites(chat_id=chat_id)
     query_embedding = embed_text(query)
     return count_similar(query_embedding=query_embedding, chat_id=chat_id)
 
