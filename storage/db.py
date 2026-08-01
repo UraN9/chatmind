@@ -100,6 +100,7 @@ def search_similar(
             caption,
             sender_name,
             created_at,
+            is_favorite,
             1 - (embedding <=> %s::vector) AS similarity
         FROM media_items
         WHERE embedding IS NOT NULL
@@ -198,6 +199,7 @@ def search_by_ocr_text(
             caption,
             sender_name,
             created_at,
+            is_favorite,
             ts_rank(
                 to_tsvector('simple', coalesce(ocr_text, '')),
                 plainto_tsquery('simple', %s)
@@ -279,6 +281,70 @@ def get_chat_stats(chat_id: int, top_senders_limit: int = 3) -> dict:
     }
 
 
+def list_favorites(chat_id: int, limit: int = 5, offset: int = 0) -> list[dict]:
+    """
+    Fetch favorited media items for a chat, most recently indexed
+    first (there's no separate "favorited at" timestamp, so this
+    orders by created_at like everything else). Used by /favorites,
+    which reuses the same one-at-a-time gallery as /find.
+    """
+    sql = """
+        SELECT id, file_id, media_type, ocr_text, caption,
+               sender_name, created_at, is_favorite
+        FROM media_items
+        WHERE chat_id = %s AND is_favorite = TRUE
+        ORDER BY created_at DESC
+        LIMIT %s OFFSET %s
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (chat_id, limit, offset))
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def count_favorites(chat_id: int) -> int:
+    """Count favorited media items in a chat, for the /favorites
+    gallery's "N/total" counter."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM media_items WHERE chat_id = %s AND is_favorite = TRUE",
+                (chat_id,),
+            )
+            return cur.fetchone()[0]
+
+
+def toggle_favorite(item_id: int) -> bool:
+    """
+    Flip is_favorite on a single media item and return the new value.
+    Favorite is shared per-chat, not per-user: anyone who can see the
+    photo can toggle it, same as anyone can already search for it.
+
+    Raises ValueError if no item with that id exists.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE media_items
+                SET is_favorite = NOT is_favorite
+                WHERE id = %s
+                RETURNING is_favorite
+                """,
+                (item_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No media item with id={item_id}")
+            new_value = row[0]
+        conn.commit()
+
+    return new_value
+
+
 def get_item_by_id(item_id: int) -> Optional[dict]:
     """
     Fetch a single media item by its id. Used when the person taps an
@@ -290,7 +356,7 @@ def get_item_by_id(item_id: int) -> Optional[dict]:
             cur.execute(
                 """
                 SELECT id, file_id, media_type, ocr_text, caption,
-                       sender_name, created_at
+                       sender_name, created_at, is_favorite
                 FROM media_items
                 WHERE id = %s
                 """,

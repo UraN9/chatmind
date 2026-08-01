@@ -15,6 +15,7 @@ Responsibilities:
 import io
 import logging
 import uuid
+from typing import Optional
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -34,11 +35,14 @@ from processing.embeddings import embed_image, embed_text
 from processing.ocr import extract_text
 from storage.db import (
     count_by_ocr_text,
+    count_favorites,
     count_similar,
     get_chat_stats,
+    list_favorites,
     save_item,
     search_by_ocr_text,
     search_similar,
+    toggle_favorite,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +67,8 @@ HELP_TEXT = (
     "I'll analyze it, extract visible text, and save it for future searches.\n\n"
     "🔍 Find it later\n"
     "Use /find <description> to search by objects, scenes, or text inside the image.\n\n"
+    "❤️ Save favorites\n"
+    "Tap the heart on any result to save it, then browse them with /favorites.\n\n"
     "📊 Check your stats\n"
     "Use /stats to see how many photos are indexed in this chat.\n\n"
     "💡 Tips\n"
@@ -88,6 +94,11 @@ STATS_EMPTY_TEXT = (
     "Send me a few photos and check back with /stats!"
 )
 
+FAVORITES_EMPTY_TEXT = (
+    "🤍 No favorites yet.\n\n"
+    "Tap ❤️ on a photo from /find to add it here."
+)
+
 # In-memory state for gallery navigation, keyed by a short random
 # token embedded in each nav button's callback_data. This is
 # intentionally simple (no persistence, no expiry) since chatmind runs
@@ -111,9 +122,12 @@ async def _react(message: Message, emoji: str) -> None:
 
 def _fetch_at(query: str, chat_id: int, kind: str, index: int) -> list[dict]:
     """Fetch the single result at `index` for the given kind of search
-    ("text match" or "visual similarity"), for gallery navigation."""
+    ("text match", "visual similarity", or "favorites"), for gallery
+    navigation."""
     if kind == "text match":
         return search_by_ocr_text(query_text=query, chat_id=chat_id, limit=1, offset=index)
+    if kind == "favorites":
+        return list_favorites(chat_id=chat_id, limit=1, offset=index)
     query_embedding = embed_text(query)
     return search_similar(
         query_embedding=query_embedding, chat_id=chat_id, limit=1, offset=index
@@ -125,31 +139,44 @@ def _count_results(query: str, chat_id: int, kind: str) -> int:
     search, used for the "3/14" gallery counter."""
     if kind == "text match":
         return count_by_ocr_text(query_text=query, chat_id=chat_id)
+    if kind == "favorites":
+        return count_favorites(chat_id=chat_id)
     query_embedding = embed_text(query)
     return count_similar(query_embedding=query_embedding, chat_id=chat_id)
 
 
 def _result_caption(item: dict, kind: str, index: int, total: int) -> str:
-    score = item.get("similarity", item.get("rank"))
-    lines = [f"{index + 1}/{total} \u2014 {kind}: {score:.2f}"]
+    if kind == "favorites":
+        header = f"{index + 1}/{total} \u2014 \u2764\ufe0f Favorite"
+    else:
+        score = item.get("similarity", item.get("rank"))
+        header = f"{index + 1}/{total} \u2014 {kind}: {score:.2f}"
+    lines = [header]
     if item["caption"]:
         lines.append(item["caption"])
     return "\n".join(lines)
 
 
-def _gallery_keyboard(token: str, index: int, total: int) -> InlineKeyboardMarkup:
-    """Build the \u2b05\ufe0f 3/14 \u27a1\ufe0f navigation row. The arrow buttons are
-    simply omitted at either end of the results, since Telegram has no
-    concept of a disabled button."""
-    row = []
+def _gallery_keyboard(
+    token: str, index: int, total: int, item_id: int, is_favorite: bool
+) -> InlineKeyboardMarkup:
+    """Build the gallery keyboard: a \u2b05\ufe0f N/total \u27a1\ufe0f nav row (arrows
+    omitted at either end, since Telegram has no disabled-button
+    concept), plus a row to toggle favorite status on the item
+    currently shown."""
+    nav_row = []
     if index > 0:
-        row.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"nav:{token}:-1"))
-    row.append(
+        nav_row.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"nav:{token}:-1"))
+    nav_row.append(
         InlineKeyboardButton(text=f"{index + 1}/{total}", callback_data=f"noop:{token}")
     )
     if index < total - 1:
-        row.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"nav:{token}:1"))
-    return InlineKeyboardMarkup(inline_keyboard=[row])
+        nav_row.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"nav:{token}:1"))
+
+    fav_text = "\U0001F494 Remove favorite" if is_favorite else "\u2764\uFE0F Add favorite"
+    fav_row = [InlineKeyboardButton(text=fav_text, callback_data=f"fav:{token}:{item_id}")]
+
+    return InlineKeyboardMarkup(inline_keyboard=[nav_row, fav_row])
 
 
 def _format_stats(stats: dict) -> str:
@@ -192,6 +219,42 @@ def _welcome_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+async def _send_gallery(
+    message: Message, kind: str, query: Optional[str], results: list[dict], total: int
+) -> None:
+    """Send the first result as a single-photo gallery message with
+    nav + favorite-toggle buttons, and register it in
+    _pending_searches so later button taps know what to do. Shared by
+    /find (and its Search-button reply flow) and /favorites."""
+    item = results[0]
+    token = uuid.uuid4().hex[:12]
+
+    try:
+        sent = await message.answer_photo(
+            item["file_id"],
+            caption=_result_caption(item, kind, index=0, total=total),
+            reply_markup=_gallery_keyboard(
+                token, index=0, total=total, item_id=item["id"], is_favorite=item["is_favorite"]
+            ),
+        )
+    except TelegramAPIError:
+        logger.warning(
+            "Could not send photo file_id=%s (may be too old/invalid)",
+            item["file_id"],
+        )
+        await message.reply(NOTHING_FOUND_TEXT)
+        return
+
+    _pending_searches[token] = {
+        "query": query,
+        "chat_id": message.chat.id,
+        "kind": kind,
+        "index": 0,
+        "total": total,
+        "message_id": sent.message_id,
+    }
+
+
 async def _perform_find(message: Message, query: str) -> None:
     """Shared search logic used by both /find and the "Search" button
     flow (reply to the "What are you looking for?" prompt)."""
@@ -218,32 +281,7 @@ async def _perform_find(message: Message, query: str) -> None:
         await message.reply(NOTHING_FOUND_TEXT)
         return
 
-    item = results[0]
-    token = uuid.uuid4().hex[:12]
-
-    try:
-        sent = await message.answer_photo(
-            item["file_id"],
-            caption=_result_caption(item, kind, index=0, total=total),
-            reply_markup=_gallery_keyboard(token, index=0, total=total),
-        )
-    except TelegramAPIError:
-        logger.warning(
-            "Could not send photo file_id=%s (may be too old/invalid)",
-            item["file_id"],
-        )
-        await message.reply(NOTHING_FOUND_TEXT)
-        return
-
-    if total > 1:
-        _pending_searches[token] = {
-            "query": query,
-            "chat_id": message.chat.id,
-            "kind": kind,
-            "index": 0,
-            "total": total,
-            "message_id": sent.message_id,
-        }
+    await _send_gallery(message, kind, query, results, total)
 
 
 @router.message(CommandStart())
@@ -359,6 +397,27 @@ async def handle_find(message: Message) -> None:
     await _perform_find(message, query)
 
 
+@router.message(Command("favorites"))
+async def handle_favorites(message: Message) -> None:
+    """Browse favorited photos as the same one-at-a-time gallery used
+    by /find, most recently indexed first."""
+    try:
+        total = count_favorites(message.chat.id)
+        results = list_favorites(message.chat.id, limit=1, offset=0) if total else []
+    except Exception:
+        logger.exception("Failed to fetch favorites for chat %s", message.chat.id)
+        await message.reply(
+            "Something went wrong while fetching favorites. Please try again."
+        )
+        return
+
+    if not results:
+        await message.reply(FAVORITES_EMPTY_TEXT)
+        return
+
+    await _send_gallery(message, "favorites", None, results, total)
+
+
 @router.message(Command("stats"))
 async def handle_stats(message: Message) -> None:
     """Show aggregate stats for this chat: how many photos are
@@ -376,6 +435,44 @@ async def handle_stats(message: Message) -> None:
         return
 
     await message.reply(_format_stats(stats))
+
+
+@router.callback_query(F.data.startswith("fav:"))
+async def handle_favorite(callback: CallbackQuery) -> None:
+    """Toggle favorite status on the currently shown item and refresh
+    just the keyboard \u2014 the photo and caption stay the same. Works
+    even if the pending-search state has expired (e.g. bot restart),
+    since item_id is embedded in the callback_data itself; it just
+    falls back to a single-item (1/1) keyboard in that case."""
+    _, token, item_id_str = callback.data.split(":", maxsplit=2)
+    item_id = int(item_id_str)
+
+    try:
+        is_favorite = toggle_favorite(item_id)
+    except Exception:
+        logger.exception("Failed to toggle favorite for item %s", item_id)
+        await callback.answer("Something went wrong, please try again.")
+        return
+
+    state = _pending_searches.get(token)
+    index = state["index"] if state else 0
+    total = state["total"] if state else 1
+
+    try:
+        await callback.bot.edit_message_reply_markup(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            reply_markup=_gallery_keyboard(token, index, total, item_id, is_favorite),
+        )
+    except TelegramAPIError:
+        logger.warning(
+            "Could not update favorite keyboard for message %s",
+            callback.message.message_id,
+        )
+
+    await callback.answer(
+        "Added to favorites \u2764\uFE0F" if is_favorite else "Removed from favorites"
+    )
 
 
 @router.callback_query(F.data.startswith("noop:"))
@@ -428,7 +525,13 @@ async def handle_nav(callback: CallbackQuery) -> None:
             chat_id=state["chat_id"],
             message_id=state["message_id"],
             media=InputMediaPhoto(media=item["file_id"], caption=caption),
-            reply_markup=_gallery_keyboard(token, new_index, state["total"]),
+            reply_markup=_gallery_keyboard(
+                token,
+                new_index,
+                state["total"],
+                item_id=item["id"],
+                is_favorite=item["is_favorite"],
+            ),
         )
     except TelegramAPIError:
         logger.warning(
