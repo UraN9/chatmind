@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS media_items (
 
     ocr_text TEXT,                  -- text extracted from the image (OCR)
     caption TEXT,                   -- original caption, if any
+    is_favorite BOOLEAN NOT NULL DEFAULT FALSE,  -- toggled via the ❤️ button, shared per-chat
 
     -- CLIP ViT-B/32 produces a 512-dimensional vector.
     -- Update this dimension if you switch to a different model.
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS media_items (
     media_type TEXT NOT NULL,
     ocr_text TEXT,
     caption TEXT,
+    is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
     embedding vector(512),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
