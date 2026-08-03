@@ -16,6 +16,7 @@ A Telegram bot that indexes photos and screenshots shared in a chat and lets you
 
 ```
 chatmind/
+
 ├── docker-compose.yml   # Postgres + pgvector
 ├── config.py            # centralized configuration
 ├── pytest.ini           # pytest configuration
