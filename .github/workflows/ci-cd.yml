@@ -25,12 +25,12 @@ jobs:
           --health-retries=10
 
     env:
-      DB_HOST: localhost
-      DB_PORT: 5432
-      DB_NAME: chatmind
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      TEST_DB_NAME: chatmind_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: chatmind
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_TEST_DB: chatmind_test
       # Never a real token: test_main.py monkeypatches this anyway,
       # but config.py may still expect *something* set at import time.
       TELEGRAM_BOT_TOKEN: "000000:CI-placeholder-not-a-real-token"

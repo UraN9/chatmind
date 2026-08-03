@@ -26,8 +26,10 @@ services:
       # Override whatever's in .env: inside the compose network the
       # bot must reach Postgres by service name on the internal port,
       # not via the host-mapped 5433 used for external access.
-      - DB_HOST=db
-      - DB_PORT=5432
+      # NOTE: config.py reads POSTGRES_HOST/POSTGRES_PORT (not
+      # DB_HOST/DB_PORT) -- these names must match exactly.
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
     volumes:
       # Persist the downloaded CLIP weights across container restarts
       # -- without this, open-clip-torch re-downloads them from the
