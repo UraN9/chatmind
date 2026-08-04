@@ -23,4 +23,10 @@ RUN pip install --no-cache-dir \
 
 COPY . .
 
+# Without this, Python block-buffers stdout when it's not attached to
+# a real terminal (which is always the case in a container) -- log
+# lines sit in an internal buffer and may not show up in `docker logs`
+# until the buffer fills or the process exits.
+ENV PYTHONUNBUFFERED=1
+
 CMD ["python", "-m", "bot.main"]
