@@ -98,6 +98,7 @@ def search_similar(
             media_type,
             ocr_text,
             caption,
+            sender_id,
             sender_name,
             created_at,
             is_favorite,
@@ -197,6 +198,7 @@ def search_by_ocr_text(
             media_type,
             ocr_text,
             caption,
+            sender_id,
             sender_name,
             created_at,
             is_favorite,
@@ -290,7 +292,7 @@ def list_favorites(chat_id: int, limit: int = 5, offset: int = 0) -> list[dict]:
     """
     sql = """
         SELECT id, file_id, media_type, ocr_text, caption,
-               sender_name, created_at, is_favorite
+               sender_id, sender_name, created_at, is_favorite
         FROM media_items
         WHERE chat_id = %s AND is_favorite = TRUE
         ORDER BY created_at DESC
@@ -345,6 +347,23 @@ def toggle_favorite(item_id: int) -> bool:
     return new_value
 
 
+def delete_item(item_id: int) -> bool:
+    """
+    Remove a media item from the index (does NOT delete the underlying
+    Telegram message -- the bot doesn't have permission for that, and
+    it would be a different, riskier action anyway). Returns True if
+    a row was actually deleted, False if no item with that id existed
+    (e.g. someone else already deleted it a moment earlier).
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM media_items WHERE id = %s", (item_id,))
+            deleted = cur.rowcount > 0
+        conn.commit()
+
+    return deleted
+
+
 def get_item_by_id(item_id: int) -> Optional[dict]:
     """
     Fetch a single media item by its id. Used when the person taps an
@@ -356,7 +375,7 @@ def get_item_by_id(item_id: int) -> Optional[dict]:
             cur.execute(
                 """
                 SELECT id, file_id, media_type, ocr_text, caption,
-                       sender_name, created_at, is_favorite
+                       sender_id, sender_name, created_at, is_favorite
                 FROM media_items
                 WHERE id = %s
                 """,

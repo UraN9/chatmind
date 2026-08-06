@@ -47,6 +47,7 @@ def fake_bot():
     bot.download_file = AsyncMock()
     bot.edit_message_media = AsyncMock()
     bot.edit_message_reply_markup = AsyncMock()
+    bot.edit_message_caption = AsyncMock()
     return bot
 
 
@@ -91,12 +92,14 @@ def make_message(fake_bot):
 @pytest.fixture
 def make_callback(fake_bot):
     """Factory for a fake aiogram CallbackQuery: .data, a minimal
-    .message (with chat/message_id/answer), .bot, and .answer()."""
+    .message (with chat/message_id/answer), .bot, .from_user, and
+    .answer()."""
 
-    def _make(data, chat_id=CHAT_ID, message_id=999):
+    def _make(data, chat_id=CHAT_ID, message_id=999, user_id=1001):
         callback = MagicMock()
         callback.data = data
         callback.bot = fake_bot
+        callback.from_user = SimpleNamespace(id=user_id)
         callback.message = MagicMock()
         callback.message.chat = SimpleNamespace(id=chat_id)
         callback.message.message_id = message_id
@@ -530,3 +533,96 @@ async def test_stats_summarizes_indexed_photos(make_message, sample_embedding):
     assert "With readable text (OCR): 1" in text
     assert "Dima" in text
     assert "Olena" in text
+
+
+# --- /delete (via the 🗑️ gallery button) ---------------------------------
+
+
+async def test_delete_removes_item_when_uploader_taps_it(
+    make_message, make_callback, sample_embedding
+):
+    item_id = save_item(
+        chat_id=CHAT_ID,
+        message_id=1,
+        file_id="item_1",
+        media_type="photo",
+        embedding=sample_embedding,
+        ocr_text="find me",
+        sender_id=1001,
+    )
+    message = make_message(text="/find find me", user_id=1001)
+    await handlers.handle_find(message)
+    token = next(iter(handlers._pending_searches))
+
+    # Same user_id (1001) as the uploader -- default for both fixtures.
+    callback = make_callback(f"del:{token}:{item_id}", user_id=1001)
+    await handlers.handle_delete(callback)
+
+    assert get_item_by_id(item_id) is None
+    callback.bot.edit_message_caption.assert_awaited_once()
+    callback.answer.assert_awaited_once()
+    _, kwargs = callback.answer.call_args
+    assert kwargs.get("show_alert") is not True
+
+
+async def test_delete_refuses_when_a_different_user_taps_it(
+    make_message, make_callback, sample_embedding
+):
+    item_id = save_item(
+        chat_id=CHAT_ID,
+        message_id=1,
+        file_id="item_1",
+        media_type="photo",
+        embedding=sample_embedding,
+        ocr_text="find me",
+        sender_id=1001,
+    )
+    message = make_message(text="/find find me", user_id=1001)
+    await handlers.handle_find(message)
+    token = next(iter(handlers._pending_searches))
+
+    # Different user_id than the uploader (1001).
+    callback = make_callback(f"del:{token}:{item_id}", user_id=9999)
+    await handlers.handle_delete(callback)
+
+    # Item must survive -- only the uploader may delete it.
+    assert get_item_by_id(item_id) is not None
+    callback.bot.edit_message_caption.assert_not_called()
+    callback.answer.assert_awaited_once()
+    _, kwargs = callback.answer.call_args
+    assert kwargs.get("show_alert") is True
+
+
+async def test_delete_shows_alert_for_already_removed_item(make_callback):
+    callback = make_callback("del:sometoken:999999")  # no such item id
+    await handlers.handle_delete(callback)
+
+    callback.answer.assert_awaited_once()
+    _, kwargs = callback.answer.call_args
+    assert kwargs.get("show_alert") is True
+
+
+async def test_deleted_item_no_longer_shows_up_in_find(
+    make_message, make_callback, sample_embedding
+):
+    item_id = save_item(
+        chat_id=CHAT_ID,
+        message_id=1,
+        file_id="item_1",
+        media_type="photo",
+        embedding=sample_embedding,
+        ocr_text="unique phrase",
+        sender_id=1001,
+    )
+    message = make_message(text="/find unique phrase", user_id=1001)
+    await handlers.handle_find(message)
+    token = next(iter(handlers._pending_searches))
+
+    callback = make_callback(f"del:{token}:{item_id}", user_id=1001)
+    await handlers.handle_delete(callback)
+
+    second_search = make_message(text="/find unique phrase")
+    await handlers.handle_find(second_search)
+
+    second_search.reply.assert_awaited_once_with(handlers.NOTHING_FOUND_TEXT)
+    second_search.answer_photo.assert_not_called()
