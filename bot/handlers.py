@@ -37,7 +37,9 @@ from storage.db import (
     count_by_ocr_text,
     count_favorites,
     count_similar,
+    delete_item,
     get_chat_stats,
+    get_item_by_id,
     list_favorites,
     save_item,
     search_by_ocr_text,
@@ -69,6 +71,8 @@ HELP_TEXT = (
     "Use /find <description> to search by objects, scenes, or text inside the image.\n\n"
     "❤️ Save favorites\n"
     "Tap the heart on any result to save it, then browse them with /favorites.\n\n"
+    "🗑️ Remove a photo\n"
+    "Tap Delete on a result to remove it from the index (only the person who sent it can).\n\n"
     "📊 Check your stats\n"
     "Use /stats to see how many photos are indexed in this chat.\n\n"
     "💡 Tips\n"
@@ -163,8 +167,11 @@ def _gallery_keyboard(
 ) -> InlineKeyboardMarkup:
     """Build the gallery keyboard: a \u2b05\ufe0f N/total \u27a1\ufe0f nav row (arrows
     omitted at either end, since Telegram has no disabled-button
-    concept), plus a row to toggle favorite status on the item
-    currently shown."""
+    concept), a row to toggle favorite status, and a delete row.
+    Delete is shown to everyone (Telegram can't render different
+    keyboards per viewer on one message) -- the actual permission
+    check (only the original uploader can delete) happens when the
+    button is tapped, in handle_delete."""
     nav_row = []
     if index > 0:
         nav_row.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"nav:{token}:-1"))
@@ -177,7 +184,11 @@ def _gallery_keyboard(
     fav_text = "\U0001F494 Remove favorite" if is_favorite else "\u2764\uFE0F Add favorite"
     fav_row = [InlineKeyboardButton(text=fav_text, callback_data=f"fav:{token}:{item_id}")]
 
-    return InlineKeyboardMarkup(inline_keyboard=[nav_row, fav_row])
+    del_row = [
+        InlineKeyboardButton(text="\U0001F5D1\uFE0F Delete", callback_data=f"del:{token}:{item_id}")
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=[nav_row, fav_row, del_row])
 
 
 def _format_stats(stats: dict) -> str:
@@ -474,6 +485,58 @@ async def handle_favorite(callback: CallbackQuery) -> None:
     await callback.answer(
         "Added to favorites \u2764\uFE0F" if is_favorite else "Removed from favorites"
     )
+
+
+@router.callback_query(F.data.startswith("del:"))
+async def handle_delete(callback: CallbackQuery) -> None:
+    """Remove an item from the index -- only the person who originally
+    uploaded it is allowed to. This only unindexes it (so it stops
+    showing up in /find and /favorites); the actual Telegram message
+    with the photo is untouched, since the bot has no business (or
+    permission) deleting other people's messages."""
+    _, token, item_id_str = callback.data.split(":", maxsplit=2)
+    item_id = int(item_id_str)
+
+    item = get_item_by_id(item_id)
+    if item is None:
+        await callback.answer("Already removed.", show_alert=True)
+        return
+
+    if item["sender_id"] != callback.from_user.id:
+        await callback.answer(
+            "Only the person who uploaded this photo can delete it.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        deleted = delete_item(item_id)
+    except Exception:
+        logger.exception("Failed to delete item %s", item_id)
+        await callback.answer("Something went wrong, please try again.")
+        return
+
+    if not deleted:
+        await callback.answer("Already removed.", show_alert=True)
+        return
+
+    try:
+        await callback.bot.edit_message_caption(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            caption="\U0001F5D1\uFE0F Removed from the index \u2014 it won't show up in "
+            "/find or /favorites anymore.",
+            reply_markup=None,
+        )
+    except TelegramAPIError:
+        logger.warning(
+            "Could not update message %s after deleting item %s",
+            callback.message.message_id,
+            item_id,
+        )
+
+    _pending_searches.pop(token, None)
+    await callback.answer("Removed.")
 
 
 @router.callback_query(F.data.startswith("noop:"))
