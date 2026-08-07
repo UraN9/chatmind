@@ -130,8 +130,8 @@ Coverage reports (terminal, HTML, and XML for Codecov) are generated automatical
 - [x] Docker + docker-compose
 - [x] CI/CD (GitHub Actions, GHCR, branch protection)
 - [x] Codecov coverage tracking
-- [ ] `/delete` for removing an indexed photo
-- [ ] Privacy policy
+- [x] `/delete` for removing an indexed photo
+- [x] Privacy policy
 
 ## License
 
